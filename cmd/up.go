@@ -81,80 +81,89 @@ func mustAbsDir(p string) (string, error) {
 	return abs, nil
 }
 
-func shEscape(s string) string {
-	// Minimal escaping for double-quoted context
-	return strings.ReplaceAll(s, `"`, `\"`)
-}
-
 func runTmuxGeneric(session string, prof config.Profile, absDirs map[string]string) error {
 	var b strings.Builder
 	writeln := func(s string) { b.WriteString(s); b.WriteByte('\n') }
 
-	// --- Validate we have exactly the target arrangement (2 columns; left has 2 rows) ---
-	if len(prof.Layout.Columns) != 2 {
-		return fmt.Errorf("expected exactly 2 columns in layout (left=[BE,FE], right=[git])")
+	if len(prof.Layout.Columns) == 0 {
+		return fmt.Errorf("layout.columns must have at least one column")
 	}
-	left := prof.Layout.Columns[0]
-	right := prof.Layout.Columns[1]
-	if len(left.Rows) != 2 {
-		return fmt.Errorf("expected left column to have exactly 2 rows (e.g. [be, fe])")
-	}
-	if len(right.Rows) != 1 {
-		return fmt.Errorf("expected right column to have exactly 1 row (e.g. [git])")
-	}
-	// Resolve pane keys
-	leftTopKey := left.Rows[0]
-	leftBotKey := left.Rows[1]
-	rightKey := right.Rows[0]
-
-	leftTopPane, ok := prof.Panes[leftTopKey]
-	if !ok {
-		return fmt.Errorf("pane %q not defined", leftTopKey)
-	}
-	leftBotPane, ok := prof.Panes[leftBotKey]
-	if !ok {
-		return fmt.Errorf("pane %q not defined", leftBotKey)
-	}
-	rightPane, ok := prof.Panes[rightKey]
-	if !ok {
-		return fmt.Errorf("pane %q not defined", rightKey)
+	// Validate keys
+	for ci, col := range prof.Layout.Columns {
+		if len(col.Rows) == 0 {
+			return fmt.Errorf("layout.columns[%d] must have at least one row", ci)
+		}
+		for _, key := range col.Rows {
+			if _, ok := prof.Panes[key]; !ok {
+				return fmt.Errorf("pane %q referenced in layout but not defined in panes", key)
+			}
+		}
 	}
 
-	// --- Script ---
 	writeln("set -e")
 	writeln("tmux start-server")
 	writeln(fmt.Sprintf("tmux has-session -t %q 2>/dev/null && tmux kill-session -t %q", session, session))
 
-	// 1) Start with BE (left/top) — create window
-	writeln(fmt.Sprintf(`tmux new-session -d -s %q -n %q -c %q`, session, shEscape(leftTopPane.Name), absDirs[leftTopKey]))
-	writeln(fmt.Sprintf(`LEFT_TOP=$(tmux display-message -p -t %q:%s.0 '#{pane_id}')`, session, shEscape(leftTopPane.Name)))
-	writeln(`tmux select-pane -T "` + shEscape(leftTopPane.Name) + `" -t "$LEFT_TOP"`)
-	if strings.TrimSpace(leftTopPane.Cmd) != "" {
-		writeln(fmt.Sprintf(`tmux send-keys -t "$LEFT_TOP" 'exec $SHELL -lc "%s"' C-m`, shEscape(leftTopPane.Cmd)))
+	// ----- 1) Create the very first pane: column 0, row 0
+	c0r0Key := prof.Layout.Columns[0].Rows[0]
+	c0r0Pane := prof.Panes[c0r0Key]
+	writeln(fmt.Sprintf(`tmux new-session -d -s %q -n %q -c %q`, session, shEscape(c0r0Pane.Name), absDirs[c0r0Key]))
+	writeln(fmt.Sprintf(`C0R0=$(tmux display-message -p -t %q:%s.0 '#{pane_id}')`, session, shEscape(c0r0Pane.Name)))
+	writeln(`tmux select-pane -T "` + shEscape(c0r0Pane.Name) + `" -t "$C0R0"`)
+	if strings.TrimSpace(c0r0Pane.Cmd) != "" {
+		writeln(fmt.Sprintf(`tmux send-keys -t "$C0R0" 'exec $SHELL -lc "%s"' C-m`, shEscape(c0r0Pane.Cmd)))
 	}
 
-	// 2) Create RIGHT column (full height) from LEFT_TOP
-	writeln(fmt.Sprintf(`RIGHT=$(tmux split-window -h -t "$LEFT_TOP" -c %q -P -F '#{pane_id}')`, absDirs[rightKey]))
-	writeln(`tmux select-pane -T "` + shEscape(rightPane.Name) + `" -t "$RIGHT"`)
-	if strings.TrimSpace(rightPane.Cmd) != "" {
-		writeln(fmt.Sprintf(`tmux send-keys -t "$RIGHT" 'exec $SHELL -lc "%s"' C-m`, shEscape(rightPane.Cmd)))
+	// ----- 2) Create the TOP panes for columns 1..N-1 by splitting horizontally off C0R0
+	// This guarantees every right column is full-height.
+	for c := 1; c < len(prof.Layout.Columns); c++ {
+		key0 := prof.Layout.Columns[c].Rows[0]
+		p0 := prof.Panes[key0]
+		dir0 := absDirs[key0]
+		writeln(fmt.Sprintf(`C%[1]dR0=$(tmux split-window -h -t "$C0R0" -c %q -P -F '#{pane_id}')`, c, dir0))
+		writeln(fmt.Sprintf(`tmux select-pane -T "%s" -t "$C%dR0"`, shEscape(p0.Name), c))
+		if strings.TrimSpace(p0.Cmd) != "" {
+			writeln(fmt.Sprintf(`tmux send-keys -t "$C%dR0" 'exec $SHELL -lc "%s"' C-m`, c, shEscape(p0.Cmd)))
+		}
 	}
 
-	// 3) Split LEFT column vertically to create FE **below** BE
-	writeln(fmt.Sprintf(`LEFT_BOT=$(tmux split-window -v -t "$LEFT_TOP" -c %q -P -F '#{pane_id}')`, absDirs[leftBotKey]))
-	writeln(`tmux select-pane -T "` + shEscape(leftBotPane.Name) + `" -t "$LEFT_BOT"`)
-	if strings.TrimSpace(leftBotPane.Cmd) != "" {
-		writeln(fmt.Sprintf(`tmux send-keys -t "$LEFT_BOT" 'exec $SHELL -lc "%s"' C-m`, shEscape(leftBotPane.Cmd)))
+	// ----- 3) For each column, stack remaining rows vertically under that column's top
+	for c := 0; c < len(prof.Layout.Columns); c++ {
+		rows := prof.Layout.Columns[c].Rows
+		if len(rows) == 1 {
+			continue
+		}
+		// base is the top pane id of this column
+		base := fmt.Sprintf(`"$C%dR0"`, c)
+		for r := 1; r < len(rows); r++ {
+			key := rows[r]
+			p := prof.Panes[key]
+			dir := absDirs[key]
+			writeln(fmt.Sprintf(`C%[1]dR%[2]d=$(tmux split-window -v -t %s -c %q -P -F '#{pane_id}')`, c, r, base, dir))
+			writeln(fmt.Sprintf(`tmux select-pane -T "%s" -t "$C%dR%d"`, shEscape(p.Name), c, r))
+			if strings.TrimSpace(p.Cmd) != "" {
+				writeln(fmt.Sprintf(`tmux send-keys -t "$C%dR%d" 'exec $SHELL -lc "%s"' C-m`, c, r, shEscape(p.Cmd)))
+			}
+			base = fmt.Sprintf(`"$C%dR%d"`, c, r)
+		}
 	}
 
-	// 4) Make BE/FE heights equal in the LEFT column
-	//    Compute half of the window height and set the bottom-left pane to that height.
-	//    (tmux counts borders internally; letting tmux handle exact math is fine in practice.)
+	// ----- 4) Equalise heights within each column that has >1 row (keeps widths intact)
 	writeln(fmt.Sprintf(`WH=$(tmux display-message -p -t %q '#{window_height}')`, session))
-	writeln(`HALF=$(( WH / 2 ))`)
-	writeln(`tmux resize-pane -t "$LEFT_BOT" -y "$HALF"`)
+	for c := 0; c < len(prof.Layout.Columns); c++ {
+		rows := prof.Layout.Columns[c].Rows
+		if len(rows) <= 1 {
+			continue
+		}
+		writeln(fmt.Sprintf(`H%d=$(( WH / %d ))`, c, len(rows)))
+		for r := len(rows) - 1; r >= 0; r-- {
+			writeln(fmt.Sprintf(`tmux resize-pane -t "$C%dR%d" -y "$H%d"`, c, r, c))
+		}
+	}
 
-	// NOTE: do NOT call 'select-layout tiled' — it would destroy the two-column design.
+	// (Optional) equalise column widths or set specific widths here if you add config.
+
+	// ----- 5) Attach (do NOT use 'tiled')
 	writeln(fmt.Sprintf(`tmux attach -t %q`, session))
 
 	tmpFile := filepath.Join(os.TempDir(), "devmod_tmux.sh")
@@ -165,4 +174,8 @@ func runTmuxGeneric(session string, prof config.Profile, absDirs map[string]stri
 	cmd := exec.Command("/bin/sh", "-c", tmpFile)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+func shEscape(s string) string {
+	return strings.ReplaceAll(s, `"`, `\"`)
 }
