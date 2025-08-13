@@ -1,0 +1,21 @@
+version: 1
+sessionName: your-project-name
+profiles:
+  full:
+    layout:
+      columns:
+        - rows: ["be", "fe"]
+        - rows: ["git"]
+    panes:
+      be:
+        name: "BE"
+        dir: "/path/to/backend"
+        cmd: "dotnet watch run"
+      fe:
+        name: "FE"
+        dir: "/path/to/frontend"
+        cmd: "npm start"
+      git:
+        name: "git"
+        dir: "/path/to/project"
+        cmd: "lazygit"
