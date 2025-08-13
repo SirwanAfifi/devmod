@@ -1,0 +1,23 @@
+project_name: devmod
+
+builds:
+  - main: ./cmd/devmod
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+
+brews:
+  - name: devmod
+    tap:
+      owner: sirwanafifi
+      name: homebrew-devmod
+    commit_author:
+      name: release-bot
+      email: releases@example.com
+    homepage: "https://github.com/sirwanafifi/devmod"
+    description: "Manage development environments with tmux layouts and project profiles"
+    license: "MIT"
+    install: |
+      bin.install "devmod"
+    test: |
+      system "#{bin}/devmod", "--help"
