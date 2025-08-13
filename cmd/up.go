@@ -13,6 +13,38 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func checkRequiredTools(cmds []string) error {
+	missing := []string{}
+	for _, c := range cmds {
+		if _, err := exec.LookPath(c); err != nil {
+			missing = append(missing, c)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required tools: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func extractCommandsFromProfile(p config.Profile) []string {
+	tools := map[string]struct{}{"tmux": {}} // tmux is always required
+	for _, pane := range p.Panes {
+		if pane.Cmd == "" {
+			continue
+		}
+		// Take the first word from the command string
+		fields := strings.Fields(pane.Cmd)
+		if len(fields) > 0 {
+			tools[fields[0]] = struct{}{}
+		}
+	}
+	list := make([]string, 0, len(tools))
+	for t := range tools {
+		list = append(list, t)
+	}
+	return list
+}
+
 var profile string
 
 var upCmd = &cobra.Command{
@@ -34,6 +66,12 @@ var upCmd = &cobra.Command{
 				keys = append(keys, k)
 			}
 			return fmt.Errorf("profile %q not found. Available: %s", profile, strings.Join(keys, ", "))
+		}
+
+		// Pre-flight: check required tools
+		required := extractCommandsFromProfile(p)
+		if err := checkRequiredTools(required); err != nil {
+			return err
 		}
 
 		// Validate and absolutise pane dirs

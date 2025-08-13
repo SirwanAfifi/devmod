@@ -13,7 +13,7 @@ var initCmd = &cobra.Command{
 	Short: "Initialise a new project config",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		template := `version: 1
-sessionName: my-project
+sessionName: your-project-name
 profiles:
   full:
     layout:
@@ -23,15 +23,15 @@ profiles:
     panes:
       be:
         name: "BE"
-        dir: "./backend"
+        dir: "/path/to/backend"
         cmd: "dotnet watch run"
       fe:
         name: "FE"
-        dir: "./frontend"
-        cmd: "pnpm dev"
+        dir: "/path/to/frontend"
+        cmd: "npm start"
       git:
         name: "git"
-        dir: "."
+        dir: "/path/to/project"
         cmd: "lazygit"
 `
 		path := ".devmod.yml"
