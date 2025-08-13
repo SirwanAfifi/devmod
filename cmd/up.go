@@ -7,10 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/sirwanafifi/devmod/config"
 	"github.com/spf13/cobra"
 )
+
+var profile string
 
 var upCmd = &cobra.Command{
 	Use:   "up",
@@ -21,25 +24,33 @@ var upCmd = &cobra.Command{
 			return err
 		}
 
-		// Resolve paths to absolute and validate they exist
-		beDir, err := mustAbsDir(cfg.BackendDir)
-		if err != nil {
-			return fmt.Errorf("backendDir: %w", err)
+		if profile == "" {
+			profile = "full"
 		}
-		feDir, err := mustAbsDir(cfg.FrontendDir)
-		if err != nil {
-			return fmt.Errorf("frontendDir: %w", err)
+		p, ok := cfg.Profiles[profile]
+		if !ok {
+			keys := make([]string, 0, len(cfg.Profiles))
+			for k := range cfg.Profiles {
+				keys = append(keys, k)
+			}
+			return fmt.Errorf("profile %q not found. Available: %s", profile, strings.Join(keys, ", "))
 		}
-		vcsDir, err := mustAbsDir(cfg.VcsDir)
-		if err != nil {
-			return fmt.Errorf("vcsDir: %w", err)
+
+		// Validate and absolutise pane dirs
+		absDirs := map[string]string{}
+		for key, pane := range p.Panes {
+			d, err := mustAbsDir(pane.Dir)
+			if err != nil {
+				return fmt.Errorf("pane %q dir invalid: %w", key, err)
+			}
+			absDirs[key] = d
 		}
 
 		switch runtime.GOOS {
 		case "darwin", "linux":
-			return runTmux(cfg.SessionName, beDir, cfg.BackendCmd, feDir, cfg.FrontendCmd, vcsDir)
+			return runTmuxGeneric(cfg.SessionName, p, absDirs)
 		case "windows":
-			fmt.Println("Windows detected — TODO: add WSL/WezTerm fallback")
+			fmt.Println("Windows detected — TODO: WSL/WezTerm fallback")
 			return nil
 		default:
 			return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
@@ -48,6 +59,7 @@ var upCmd = &cobra.Command{
 }
 
 func init() {
+	upCmd.Flags().StringVarP(&profile, "profile", "p", "", "Profile to run (default: full)")
 	rootCmd.AddCommand(upCmd)
 }
 
@@ -69,38 +81,84 @@ func mustAbsDir(p string) (string, error) {
 	return abs, nil
 }
 
-func runTmux(session, beDir, beCmd, feDir, feCmd, vcsDir string) error {
-	script := fmt.Sprintf(`
-set -e
+func shEscape(s string) string {
+	// Minimal escaping for double-quoted context
+	return strings.ReplaceAll(s, `"`, `\"`)
+}
 
-tmux start-server
-tmux has-session -t "%[1]s" 2>/dev/null && tmux kill-session -t "%[1]s"
+func runTmuxGeneric(session string, prof config.Profile, absDirs map[string]string) error {
+	var b strings.Builder
+	writeln := func(s string) { b.WriteString(s); b.WriteByte('\n') }
 
-# 1) Create window with BE as the first (left, top) pane
-tmux new-session -d -s "%[1]s" -n "BE" -c "%[2]s"
-BE_PANE=$(tmux display-message -p -t "%[1]s:BE".0 '#{pane_id}')
-tmux select-pane -T "BE" -t "$BE_PANE"
-tmux send-keys -t "$BE_PANE" 'exec $SHELL -lc "%[3]s"' C-m
+	// --- Validate we have exactly the target arrangement (2 columns; left has 2 rows) ---
+	if len(prof.Layout.Columns) != 2 {
+		return fmt.Errorf("expected exactly 2 columns in layout (left=[BE,FE], right=[git])")
+	}
+	left := prof.Layout.Columns[0]
+	right := prof.Layout.Columns[1]
+	if len(left.Rows) != 2 {
+		return fmt.Errorf("expected left column to have exactly 2 rows (e.g. [be, fe])")
+	}
+	if len(right.Rows) != 1 {
+		return fmt.Errorf("expected right column to have exactly 1 row (e.g. [git])")
+	}
+	// Resolve pane keys
+	leftTopKey := left.Rows[0]
+	leftBotKey := left.Rows[1]
+	rightKey := right.Rows[0]
 
-# 2) Create RIGHT column for git (full height)
-GIT_PANE=$(tmux split-window -h -t "$BE_PANE" -c "%[6]s" -P -F '#{pane_id}')
-tmux select-pane -T "git" -t "$GIT_PANE"
-tmux send-keys  -t "$GIT_PANE" 'exec $SHELL -lc "lazygit"' C-m
+	leftTopPane, ok := prof.Panes[leftTopKey]
+	if !ok {
+		return fmt.Errorf("pane %q not defined", leftTopKey)
+	}
+	leftBotPane, ok := prof.Panes[leftBotKey]
+	if !ok {
+		return fmt.Errorf("pane %q not defined", leftBotKey)
+	}
+	rightPane, ok := prof.Panes[rightKey]
+	if !ok {
+		return fmt.Errorf("pane %q not defined", rightKey)
+	}
 
-# Optional: make right column narrower/wider (uncomment and tweak)
-# tmux resize-pane -t "$GIT_PANE" -x 90   # set right column width to 90 columns
+	// --- Script ---
+	writeln("set -e")
+	writeln("tmux start-server")
+	writeln(fmt.Sprintf("tmux has-session -t %q 2>/dev/null && tmux kill-session -t %q", session, session))
 
-# 3) Split LEFT column vertically to create FE BELOW BE
-FE_PANE=$(tmux split-window -v -t "$BE_PANE" -c "%[4]s" -P -F '#{pane_id}')
-tmux select-pane -T "FE" -t "$FE_PANE"
-tmux send-keys  -t "$FE_PANE" 'exec $SHELL -lc "%[5]s"' C-m
+	// 1) Start with BE (left/top) — create window
+	writeln(fmt.Sprintf(`tmux new-session -d -s %q -n %q -c %q`, session, shEscape(leftTopPane.Name), absDirs[leftTopKey]))
+	writeln(fmt.Sprintf(`LEFT_TOP=$(tmux display-message -p -t %q:%s.0 '#{pane_id}')`, session, shEscape(leftTopPane.Name)))
+	writeln(`tmux select-pane -T "` + shEscape(leftTopPane.Name) + `" -t "$LEFT_TOP"`)
+	if strings.TrimSpace(leftTopPane.Cmd) != "" {
+		writeln(fmt.Sprintf(`tmux send-keys -t "$LEFT_TOP" 'exec $SHELL -lc "%s"' C-m`, shEscape(leftTopPane.Cmd)))
+	}
 
-# Do NOT call 'select-layout tiled' here; it would break the 2-col design
-tmux attach -t "%[1]s"
-`, session, beDir, beCmd, feDir, feCmd, vcsDir)
+	// 2) Create RIGHT column (full height) from LEFT_TOP
+	writeln(fmt.Sprintf(`RIGHT=$(tmux split-window -h -t "$LEFT_TOP" -c %q -P -F '#{pane_id}')`, absDirs[rightKey]))
+	writeln(`tmux select-pane -T "` + shEscape(rightPane.Name) + `" -t "$RIGHT"`)
+	if strings.TrimSpace(rightPane.Cmd) != "" {
+		writeln(fmt.Sprintf(`tmux send-keys -t "$RIGHT" 'exec $SHELL -lc "%s"' C-m`, shEscape(rightPane.Cmd)))
+	}
+
+	// 3) Split LEFT column vertically to create FE **below** BE
+	writeln(fmt.Sprintf(`LEFT_BOT=$(tmux split-window -v -t "$LEFT_TOP" -c %q -P -F '#{pane_id}')`, absDirs[leftBotKey]))
+	writeln(`tmux select-pane -T "` + shEscape(leftBotPane.Name) + `" -t "$LEFT_BOT"`)
+	if strings.TrimSpace(leftBotPane.Cmd) != "" {
+		writeln(fmt.Sprintf(`tmux send-keys -t "$LEFT_BOT" 'exec $SHELL -lc "%s"' C-m`, shEscape(leftBotPane.Cmd)))
+	}
+
+	// 4) Make BE/FE heights equal in the LEFT column
+	//    Compute half of the window height and set the bottom-left pane to that height.
+	//    (tmux counts borders internally; letting tmux handle exact math is fine in practice.)
+	writeln(fmt.Sprintf(`WH=$(tmux display-message -p -t %q '#{window_height}')`, session))
+	writeln(`HALF=$(( WH / 2 ))`)
+	writeln(`tmux resize-pane -t "$LEFT_BOT" -y "$HALF"`)
+
+	// NOTE: do NOT call 'select-layout tiled' — it would destroy the two-column design.
+	writeln(fmt.Sprintf(`tmux attach -t %q`, session))
 
 	tmpFile := filepath.Join(os.TempDir(), "devmod_tmux.sh")
-	if err := os.WriteFile(tmpFile, []byte(script), 0755); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(b.String()), 0755); err != nil {
 		return err
 	}
 

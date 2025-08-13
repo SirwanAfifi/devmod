@@ -8,27 +8,40 @@ import (
 	"github.com/spf13/viper"
 )
 
-type ProjectConfig struct {
-	SessionName string `mapstructure:"sessionName"`
-	BackendDir  string `mapstructure:"backendDir"`
-	BackendCmd  string `mapstructure:"backendCmd"`
-	FrontendDir string `mapstructure:"frontendDir"`
-	FrontendCmd string `mapstructure:"frontendCmd"`
-	VcsDir      string `mapstructure:"vcsDir"`
+type Pane struct {
+	Name string `mapstructure:"name"` // shown in tmux title
+	Dir  string `mapstructure:"dir"`
+	Cmd  string `mapstructure:"cmd"`
 }
 
-// LoadConfig tries to load project config first, then global config
-func LoadConfig() (*ProjectConfig, error) {
+type Layout struct {
+	Columns []struct {
+		Rows []string `mapstructure:"rows"` // pane keys in top→bottom order
+	} `mapstructure:"columns"`
+}
+
+type Profile struct {
+	Layout Layout          `mapstructure:"layout"`
+	Panes  map[string]Pane `mapstructure:"panes"`
+}
+
+type Root struct {
+	Version     int                `mapstructure:"version"`
+	SessionName string             `mapstructure:"sessionName"`
+	Profiles    map[string]Profile `mapstructure:"profiles"`
+}
+
+func LoadConfig() (*Root, error) {
 	v := viper.New()
 
-	// 1. Try project config: ./.devmod.yml
+	// Project-level first
 	v.SetConfigName(".devmod")
 	v.SetConfigType("yaml")
 	v.AddConfigPath(".")
 	err := v.ReadInConfig()
 
 	if err != nil {
-		// 2. Fallback to global config: ~/.config/devmod/config.yml
+		// Fallback to global: ~/.config/devmod/config.yml
 		home, _ := os.UserHomeDir()
 		globalPath := filepath.Join(home, ".config", "devmod")
 		v.SetConfigName("config")
@@ -40,10 +53,13 @@ func LoadConfig() (*ProjectConfig, error) {
 		}
 	}
 
-	var cfg ProjectConfig
+	var cfg Root
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("error parsing config: %w", err)
 	}
 
+	if cfg.SessionName == "" {
+		cfg.SessionName = "devmod"
+	}
 	return &cfg, nil
 }
