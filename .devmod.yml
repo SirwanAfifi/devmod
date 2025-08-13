@@ -1,0 +1,6 @@
+sessionName: SignalOcean
+backendDir: /Users/sirwanafifi/Documents/Projects/signal/SOWebPlatform/backend/Signal.Web
+backendCmd: dotnet watch
+frontendDir: /Users/sirwanafifi/Documents/Projects/signal/SOWebPlatform
+frontendCmd: ./run.sh -fp
+vcsDir: /Users/sirwanafifi/Documents/Projects/signal/SOWebPlatform
