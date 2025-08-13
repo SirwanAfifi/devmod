@@ -8,7 +8,7 @@ builds:
 
 brews:
   - name: devmod
-    tap:
+    repository:
       owner: sirwanafifi
       name: homebrew-devmod
     commit_author:
