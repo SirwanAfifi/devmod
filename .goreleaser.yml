@@ -1,21 +1,17 @@
-# .goreleaser.yml
 version: 2
 
 project_name: devmod
 
 builds:
   - id: devmod
-    main: ./ # <- if main.go is at repo root
-    env:
-      - CGO_ENABLED=0
+    main: ./
+    env: [CGO_ENABLED=0]
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
-    ldflags:
-      - -s -w
+    ldflags: ["-s", "-w"]
 
 archives:
-  - id: tgz
-    format: tar.gz
+  - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
@@ -23,7 +19,7 @@ archives:
 
 brews:
   - name: devmod
-    tap:
+    repository:
       owner: sirwanafifi
       name: homebrew-devmod
     commit_author:
