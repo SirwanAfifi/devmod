@@ -10,7 +10,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "devmod",
 	Short: "DevMod - spin up your development tmux workspace",
-	Long:  `DevMod is a CLI tool to launch a tmux session with frontend, backend, and lazygit panes.`,
+	Long:  `DevMod is a CLI tool to launch a tmux session with your custom setup`,
 }
 
 func Execute() {
