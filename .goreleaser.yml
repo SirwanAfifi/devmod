@@ -13,15 +13,14 @@ builds:
 archives:
   - format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    files:
-      - LICENSE
-      - README.md
+    files: [LICENSE, README.md]
 
 brews:
   - name: devmod
     repository:
       owner: sirwanafifi
       name: homebrew-devmod
+    directory: Formula
     commit_author:
       name: release-bot
       email: releases@example.com
